@@ -1,3 +1,8 @@
+# author:  ZhaoKun
+# contact: 1161678627@qq.com
+# datetime:2019-11-01 10:29
+# software: PyCharm
+
 import re
 
 #此处放入自己复制的请求头信息，直接从浏览器中复制即可。
