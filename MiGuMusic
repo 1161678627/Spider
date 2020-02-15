@@ -1,0 +1,232 @@
+# author:  ZhaoKun
+# contact: 1161678627@qq.com
+# datetime:2019-11-27 22:22
+# software: PyCharm
+
+import requests
+import urllib.parse
+import execjs
+import time
+import re
+import json
+import winreg
+import sys
+
+headers = {
+    'Host': 'music.migu.cn',
+    'Referer': 'http://music.migu.cn/v3/music/player/audio',
+    'User-Agent': 'Mozilla/5.0(WindowsNT10.0;Win64;x64)AppleWebKit/537.36(KHTML,likeGecko)Chrome/79.0.3945.130Safari/537.36',
+    'X-Requested-With': 'XMLHttpRequest'
+}
+
+dow_headers={
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36'
+}
+
+#控制下载输出的进度栏
+def download(url, file_path):
+    # verify=False 这一句是为了有的网站证书问题，为True会报错
+    r = requests.get(url, stream=True)
+
+    # 既然要实现下载进度，那就要知道你文件大小啊，下面这句就是得到总大小
+    total_size = int(r.headers['Content-Length'])
+    temp_size = 0
+
+    with open(r'{}'.format(file_path), "wb") as f:
+        # iter_content()函数就是得到文件的内容，
+        # 有些人下载文件很大怎么办，内存都装不下怎么办？
+        # 那就要指定chunk_size=1024，大小自己设置，
+        # 意思是下载一点写一点到磁盘。
+        for chunk in r.iter_content(chunk_size=1024):
+            if chunk:
+                temp_size += len(chunk)
+                f.write(chunk)
+                f.flush()
+                #############花哨的下载进度部分###############
+                done = int(50 * temp_size / total_size)
+                # 调用标准输出刷新命令行，看到\r回车符了吧
+                # 相当于把每一行重新刷新一遍
+                sys.stdout.write("\r[%s%s] %d%%" % ('█' * done, ' ' * (50 - done), 100 * temp_size / total_size))
+                sys.stdout.flush()
+    print()  # 避免上面\r 回车符，执行完后需要换行了，不然都在一行显示
+
+#获取用户输入,并进行检测。
+def GetUserInput():
+    print('下载单曲输入“单曲”；批量下载某歌手歌曲输入“歌手”；输入其他内容退出程序')
+    action_type=input('请输入您的操作类型：')
+    if (action_type == '单曲'):
+        return 1
+    elif (action_type == '歌手'):
+        return 2
+    else:
+        print('************************程序即将退出************************')
+        time.sleep(3)
+        exit()
+
+#进一步获取用户要下载的内容
+def GetSearchData(action_type):
+    if action_type==1:
+        search_data=input('请输入你要搜索的歌曲（及演唱者）的名称：')
+    else:
+        search_data=input('请输入你要搜索的歌手的姓名：')
+    return search_data
+
+#根据search_data 返回搜索的原网页
+def GetSearchAnswer(search_data):
+    url='http://music.migu.cn/v3/search?keyword={}'
+    response=requests.get(url=url.format(search_data),headers=headers)
+    answer=response.content.decode()
+    return answer
+
+#将返回的网页，结合用户输入进行判断，选取操作
+def GetSongData(action_type,answer):
+    if action_type == 1:
+        SongInfoList=GetOneSongInfoList(answer)
+    else:
+        SongInfoList=GetAllSongInfoList(answer)
+    return SongInfoList
+
+#传入单页answer,获取歌曲搜索结果的前10供用户选择，返回songid_list
+def GetOneSongInfoList(answer):
+    songid_pattern=re.compile(r'"/v3/music/song/(.*?)"')
+    songid_list=songid_pattern.findall(answer)
+
+    songtitle_pattern=re.compile(r' title="(.*?)" target="_')
+    songtitle_list=songtitle_pattern.findall(answer)
+    songtitle_list=songtitle_list[0:len(songtitle_list):3]
+
+    singer_pattern=re.compile(r'singer&#34;:&#34;(.*?)&#34')
+    singer_list=singer_pattern.findall(answer)
+
+    album_pattern=re.compile(r'album&#34;:&#34;(.*?)&#34')
+    album_list=album_pattern.findall(answer)
+
+    #开始判断返回的长度
+    if len(songid_list)>=10 :
+        return [songid_list[0:9],songtitle_list[0:9],singer_list[0:9],album_list[0:9]]
+    else:
+        return [songid_list,songtitle_list,singer_list,album_list]
+
+#获取歌手id
+def GetSingerId(answer):
+    #首先获取歌手id
+    pattern=re.compile(r'<a href="/v3/music/artist/(.*?)" target')
+    singer_idlist=pattern.findall(answer)
+    singer_id=singer_idlist[0]
+    return singer_id
+
+#获取全部歌曲信息的方法，传入singer_id
+def GetAllSongInfo(singer_id):
+    url='http://music.migu.cn/v3/music/artist/{}/song'.format(singer_id)
+    response=requests.get(url=url,headers=headers)
+    answer=response.content.decode()
+    pattern=re.compile(r'全部歌曲（(.*?)首）')
+    song_num=int(pattern.findall(answer)[0])
+    #计算总的 page_num
+    if (song_num % 20 ==0) :
+        page_num=song_num/20
+    else :
+        page_num=int(song_num/20)+1
+
+    #声明4个list，用来存放歌曲信息
+    songid_list=[]
+    songtitle_list=[]
+    singer_list=[]
+    album_list=[]
+    for page in range(page_num) :
+        response=requests.get(url=url+'?page={}'.format(page+1),headers=headers)
+        page_answer=response.content.decode()
+        songid_pattern=re.compile(r'"linkUrl":"/v3/music/song/(.*?)",')
+        songtitle_pattern=re.compile(r'"title":"(.*?)",')
+        singer_pattern=re.compile(r'"singer":"(.*?)",')
+        album_pattern=re.compile(r'"album":"(.*?)"')
+        #将返回值追加存入空list中
+        songid_list.extend(songid_pattern.findall(page_answer))
+        songtitle_list.extend(songtitle_pattern.findall(page_answer))
+        singer_list.extend(singer_pattern.findall(page_answer))
+        album_list.extend(album_pattern.findall(page_answer))
+        time.sleep(2)
+    return [songid_list, songtitle_list, singer_list, album_list]
+
+#传入单页answer，获取其中的歌手id，再访问全部歌曲信息，返回大list
+def GetAllSongInfoList(answer):
+    singer_id=GetSingerId(answer=answer)
+    allsong_infolist=GetAllSongInfo(singer_id)
+    return allsong_infolist
+
+#打印出song信息，让用户输入歌曲号，进行批量选择下载。
+def GetUserSong(song_info_list):
+    print('本次共检索到'+'{}'.format(len(song_info_list[0]))+'首歌曲')
+    print('***********************歌曲结果具体信息如下***********************')
+    for num in range(len(song_info_list[0])) :
+        print('第{}首 ------ 歌名：{}；    歌手：{}；    专辑：{}'.format(num+1,song_info_list[1][num],song_info_list[2][num],song_info_list[3][num]))
+        time.sleep(0.1)
+    user_str=input('请在下方输入要下载的歌曲号，下载多首请用-号分隔，如1-2-10，表示下载第1、2、10首单曲；下载全部歌曲请输入“all”。\n请在这里输入：')
+    if(user_str=='all'):
+        return song_info_list[0],song_info_list[1],song_info_list[2]
+    else:
+        user_song=user_str.split('-')
+        user_song_01=[song_info_list[0][int(song_num)-1] for song_num in user_song]
+        user_song_02=[song_info_list[1][int(song_num)-1] for song_num in user_song]
+        user_song_03=[song_info_list[2][int(song_num)-1] for song_num in user_song]
+        return user_song_01,user_song_02,user_song_03
+
+#根据传入的单个usersong 去构造下载链接，然后发起请求获得返回的json
+def GetDowUrl(song_id,JsData):
+    data = execjs.compile(JsData).call('getdata','{"copyrightId":"'+song_id+'","auditionsFlag":0}')
+    data = data.replace('\n', '')
+    data = urllib.parse.quote(data)
+    url = 'http://music.migu.cn/v3/api/music/audioPlayer/getPlayInfo?dataType=2&data=' + data + '&secKey=bwJQZf7udiFDL8ZYxsfNO3jgxaQ5FMxk9vkTmJoyxLLotlTGRb4dE8yA%2B%2B3cDtCj2xlk4as3nRHw3ehGPwuZXFriVUonMnEpZOyR2C%2BSWgQYNoLceSu2s05T2cvEuwof6GMRKgb%2Fz8ZNkjGqgfP2cMMOB1gLp%2B6Yea%2Bxhj6tWV0%3D'
+    time.sleep(1)
+    response = requests.get(url=url, headers=headers)
+    json_data=json.loads(response.content.decode())
+    return json_data
+
+#获取桌面路径
+def get_desktop():
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,r'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders')
+    return winreg.QueryValueEx(key, "Desktop")[0]
+
+def SaveMusic(json_data,song_title,singer_name,type):
+    path=get_desktop()
+    path=path+'\{}-{}.mp3'.format(song_title,singer_name)
+    down_url=json_data['data']['{}PlayInfo'.format(type)]['playUrl']
+    # print(down_url)
+    # down_url=urllib.parse.quote(down_url)
+    if down_url==None :
+        down_url=json_data['data']['{}PlayInfo'.format('bq')]['playUrl']
+    download(url=down_url,file_path=path)
+    # content=requests.get(url=down_url,headers=dow_headers).content
+    # with open(r'{}'.format(path),mode='wb') as f:
+    #     f.write(content)
+    #     f.close()
+
+#传入用户所有的song_list，然后依次解析进行循环构造，且下载
+def DowMusic(song_ids,song_titles,singer_names):
+    # 导入js,读取保存的js文件，指定utf-8格式保险起见。
+    with open(r'migu01.js', encoding='utf-8', mode='r') as f:
+        JsData = f.read()
+        f.close()
+    num=0
+    type=input('请输入您要下载的音乐的品质（标准请输入bq、高清请输入hq、无损请输入sq）：')
+    for song_id in song_ids :
+        try :
+            num=num+1
+            json_data=GetDowUrl(song_id=song_id,JsData=JsData)
+            time.sleep(1)
+            print('第{}首歌曲  {}-{}  正在下载中'.format(num,song_titles[num-1],singer_name[num-1]))
+            SaveMusic(json_data,song_titles[num-1],singer_names[num-1],type)
+        except:
+            print('第{}首歌曲  {}-{}  下载出错，即将下载下一首歌'.format(num, song_titles[num - 1], singer_name[num - 1]))
+            continue
+    print('************************所有歌曲下载完毕！************************')
+
+if __name__ == '__main__':
+    print('************************欢迎使用本程序************************')
+    while (True):
+        action_type=GetUserInput()
+        search_data=GetSearchData(action_type=action_type)
+        search_answer=GetSearchAnswer(search_data=search_data)
+        song_info_list=GetSongData(action_type=action_type,answer=search_answer)
+        song_id,song_title,singer_name=GetUserSong(song_info_list)
+        DowMusic(song_id,song_title,singer_name)
